@@ -1,0 +1,105 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Neon Snake</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;cursor:none}
+  canvas{display:block;width:100vw;height:100vh}
+</style></head>
+<body><canvas id="c"></canvas>
+<script>
+// Neon snake: plays itself (screensaver) until someone presses arrows on the remote.
+const W = 1920, H = 1080, S = 40, GW = W / S, GH = H / S; // ponytail: fixed 1080p canvas, CSS scales to the 4K panel
+const c = document.getElementById('c'); c.width = W; c.height = H;
+const g = c.getContext('2d');
+const stars = Array.from({length: 160}, () => ({x: Math.random()*W, y: Math.random()*H, z: Math.random()*2+.3}));
+let snake, dir, food, sparks = [], score = 0, best = 0, manualUntil = 0, queued = null, t = 0, dead = 0;
+
+function reset() {
+  snake = [{x: 10, y: 13}, {x: 9, y: 13}, {x: 8, y: 13}]; dir = {x: 1, y: 0}; score = 0; placeFood();
+}
+function placeFood() {
+  do food = {x: Math.random()*GW|0, y: Math.random()*GH|0}; while (snake.some(p => p.x === food.x && p.y === food.y));
+}
+const blocked = (x, y, body) => x < 0 || y < 0 || x >= GW || y >= GH || body.some(p => p.x === x && p.y === y);
+const DIRS = [{x:1,y:0},{x:-1,y:0},{x:0,y:1},{x:0,y:-1}];
+
+// Autopilot: BFS to food; if no path, take the move with the most open space.
+function autopilot() {
+  const body = snake.slice(0, -1), h = snake[0], seen = new Set([h.x+','+h.y]), q = [];
+  for (const d of DIRS) if (!blocked(h.x+d.x, h.y+d.y, body)) { q.push({x:h.x+d.x, y:h.y+d.y, first:d}); seen.add((h.x+d.x)+','+(h.y+d.y)); }
+  while (q.length) {
+    const n = q.shift();
+    if (n.x === food.x && n.y === food.y && space(n.first) > snake.length) return n.first;
+    for (const d of DIRS) { const x = n.x+d.x, y = n.y+d.y, k = x+','+y;
+      if (!seen.has(k) && !blocked(x, y, body)) { seen.add(k); q.push({x, y, first: n.first}); } }
+  }
+  return DIRS.filter(d => !blocked(h.x+d.x, h.y+d.y, body)).sort((a, b) => space(b) - space(a))[0] || dir;
+}
+function space(d) { // flood-fill size reachable after moving in d (capped)
+  const body = snake.slice(0, -1), s = {x: snake[0].x+d.x, y: snake[0].y+d.y};
+  if (blocked(s.x, s.y, body)) return 0;
+  const seen = new Set([s.x+','+s.y]), st = [s];
+  while (st.length && seen.size < 400) { const n = st.pop();
+    for (const e of DIRS) { const x = n.x+e.x, y = n.y+e.y, k = x+','+y;
+      if (!seen.has(k) && !blocked(x, y, body)) { seen.add(k); st.push({x, y}); } } }
+  return seen.size;
+}
+
+function step() {
+  const manual = performance.now() < manualUntil;
+  if (manual && queued) { if (queued.x !== -dir.x || queued.y !== -dir.y) dir = queued; queued = null; }
+  if (!manual) dir = autopilot();
+  const h = {x: snake[0].x + dir.x, y: snake[0].y + dir.y};
+  if (blocked(h.x, h.y, snake.slice(0, -1))) { burst(snake[0], 120); dead = 40; return; }
+  snake.unshift(h);
+  if (h.x === food.x && h.y === food.y) { score++; best = Math.max(best, score); burst(food, 40); placeFood(); }
+  else snake.pop();
+}
+function burst(p, n) {
+  for (let i = 0; i < n; i++) { const a = Math.random()*6.28, v = Math.random()*9+2;
+    sparks.push({x: p.x*S+S/2, y: p.y*S+S/2, vx: Math.cos(a)*v, vy: Math.sin(a)*v, life: 1, hue: t*2 + Math.random()*60}); }
+}
+
+function draw() {
+  g.fillStyle = 'rgba(0,0,8,.35)'; g.fillRect(0, 0, W, H); // trail fade
+  for (const s of stars) { s.x -= s.z; if (s.x < 0) s.x = W;
+    g.fillStyle = `hsla(${(t+s.y/4)%360},80%,80%,${s.z/3})`; g.fillRect(s.x, s.y, s.z*1.5, s.z*1.5); }
+  g.strokeStyle = 'rgba(80,120,255,.06)'; g.lineWidth = 1; g.beginPath();
+  for (let x = 0; x <= W; x += S) { g.moveTo(x, 0); g.lineTo(x, H); }
+  for (let y = 0; y <= H; y += S) { g.moveTo(0, y); g.lineTo(W, y); }
+  g.stroke();
+  g.globalCompositeOperation = 'lighter';
+  const pulse = 1 + Math.sin(t/6)*.25;
+  g.shadowBlur = 40; g.shadowColor = g.fillStyle = `hsl(${(t*3+180)%360},100%,60%)`;
+  g.beginPath(); g.arc(food.x*S+S/2, food.y*S+S/2, S*.35*pulse, 0, 7); g.fill();
+  if (!dead) snake.forEach((p, i) => {
+    const hue = (t*2 + i*8) % 360, r = i ? S*.42 : S*.5;
+    g.shadowBlur = 30; g.shadowColor = g.fillStyle = `hsl(${hue},100%,${i ? 55 : 75}%)`;
+    g.beginPath(); g.roundRect(p.x*S+S/2-r, p.y*S+S/2-r, r*2, r*2, 10); g.fill();
+  });
+  g.shadowBlur = 0;
+  sparks = sparks.filter(s => (s.life -= .02) > 0);
+  for (const s of sparks) { s.x += s.vx; s.y += s.vy; s.vx *= .96; s.vy *= .96;
+    g.fillStyle = `hsla(${s.hue},100%,60%,${s.life})`; g.fillRect(s.x-3, s.y-3, 6, 6); }
+  g.globalCompositeOperation = 'source-over';
+  g.font = '600 36px system-ui,sans-serif'; g.fillStyle = 'rgba(255,255,255,.85)';
+  g.fillText(`${score}`, 40, 64); g.fillStyle = 'rgba(255,255,255,.4)'; g.fillText(`best ${best}`, 40, 108);
+  const manual = performance.now() < manualUntil;
+  g.textAlign = 'right'; g.fillStyle = `rgba(255,255,255,${manual ? .4 : .5 + Math.sin(t/15)*.3})`;
+  g.fillText(manual ? 'YOU' : 'AUTOPILOT · press ◀ ▲ ▼ ▶ to play', W-40, 64); g.textAlign = 'left';
+}
+
+addEventListener('keydown', e => {
+  const d = {37:{x:-1,y:0}, 38:{x:0,y:-1}, 39:{x:1,y:0}, 40:{x:0,y:1}}[e.keyCode];
+  if (!d) return; e.preventDefault(); queued = d; manualUntil = performance.now() + 15000;
+});
+
+reset();
+let acc = 0, last = performance.now();
+(function loop(now) {
+  acc = Math.min(acc + now - last, 1000); last = now;
+  const tick = performance.now() < manualUntil ? 110 : 60;
+  while (acc > tick) { acc -= tick; if (dead) { if (--dead === 0) reset(); } else step(); }
+  t++; draw(); requestAnimationFrame(loop);
+})(last);
+</script></body></html>
